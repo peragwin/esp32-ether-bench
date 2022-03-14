@@ -1,5 +1,5 @@
 #include <Arduino.h>
-// #include <FastLED.h>
+#include <FastLED.h>
 #include <ETH.h>
 #include <esp_eth.h>
 #include "lwip/err.h"
@@ -7,28 +7,45 @@
 #include "lwip/sys.h"
 #include <lwip/netdb.h>
 
-// struct CRGBA
+#define NUMSTRIPS 8
+#define NUM_LEDS_PER_STRIP 512
+#define SNAKEPATTERN 0
+#define ALTERNATEPATTERN 0
+#include <I2SClockBasedLedDriver.h>
+
+// struct CRGB
 // {
-//   uint8_t a;
 //   uint8_t r;
 //   uint8_t g;
 //   uint8_t b;
-
-//   CRGBA() {}
-//   CRGBA(CRGB &c)
-//   {
-//     const uint16_t max_brightness = 31;
-//     uint16_t brightness = ((((uint16_t)max(max(c.r, c.g), c.b) + 1) * max_brightness - 1) >> 8) + 1;
-//     a = brightness;
-//     r = (max_brightness * c.r + (brightness >> 1)) / brightness;
-//     g = (max_brightness * c.g + (brightness >> 1)) / brightness;
-//     b = (max_brightness * c.b + (brightness >> 1)) / brightness;
-//   }
 // };
 
-#define NUM_PIXELS 8192
-// CRGB pixel_data[NUM_PIXELS];
-// CRGBA hdr_pixel_data[NUM_PIXELS];
+int LED_PINS[] = {32, 33, 14, 12, 13, 15, 2, 4};
+const int CLOCK_PIN = 16;
+I2SClockBasedLedDriver led_driver;
+
+struct CRGBA
+{
+  uint8_t a;
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+
+  CRGBA() {}
+  CRGBA(CRGB &c)
+  {
+    const uint16_t max_brightness = 31;
+    uint16_t brightness = ((((uint16_t)max(max(c.r, c.g), c.b) + 1) * max_brightness - 1) >> 8) + 1;
+    a = 0xE0 | (brightness & 31);
+    r = (max_brightness * c.r + (brightness >> 1)) / brightness;
+    g = (max_brightness * c.g + (brightness >> 1)) / brightness;
+    b = (max_brightness * c.b + (brightness >> 1)) / brightness;
+  }
+};
+
+#define NUM_PIXELS (NUMSTRIPS * NUM_LEDS_PER_STRIP)
+CRGB pixel_data[NUM_PIXELS];
+CRGBA hdr_pixel_data[NUM_PIXELS];
 
 static bool eth_connected = false;
 
@@ -348,7 +365,7 @@ void WiFiEvent(WiFiEvent_t event)
     eth_connected = true;
 
     // xTaskCreatePinnedToCore(udp_server_task, "udp_task", 20000, nullptr, 4, &udp_task, 1);
-    xTaskCreatePinnedToCore(tcp_server_task, "tcp_task", 20000, nullptr, 4, &tcp_server_task_h, 1);
+    xTaskCreatePinnedToCore(tcp_server_task, "tcp_task", 20000, nullptr, 4, &tcp_server_task_h, 0);
 
     Serial.println("UDP listening on port 1337");
     break;
@@ -371,46 +388,42 @@ void setup()
 {
   Serial.begin(115200);
 
-  // for (size_t i = 0; i < NUM_PIXELS; i++)
-  // {
-  //   pixel_data[i] = CRGB(random(0x1000000));
-  // }
+  led_driver.initled((uint8_t *)hdr_pixel_data, LED_PINS, CLOCK_PIN, NUMSTRIPS, NUM_LEDS_PER_STRIP);
 
+  WiFi.mode(WIFI_MODE_NULL);
   WiFi.onEvent(WiFiEvent);
   ETH.begin(1, 17);
 }
 
 void loop()
 {
-  yield();
+  // yield();
 
-  // static int fc = 0;
-  // static unsigned long last_time = millis();
+  static int fc = 0;
+  static unsigned long last_time = millis();
 
-  // // if (udp.available())
-  // // {
-  // //   auto packet = udp.readString();
-  // //   Serial.println(packet);
-  // // }
+  fill_rainbow(pixel_data, NUM_PIXELS, fc, 1);
+  auto s = sin8(fc / 16);
+  for (size_t i = 0; i < NUM_PIXELS; i++)
+  {
+    pixel_data[i] %= s;
+  }
 
-  // CRGBA hc;
+  // auto t = micros();
+  for (size_t i = 0; i < NUM_PIXELS; i++)
+  {
+    hdr_pixel_data[i] = CRGBA(pixel_data[i]);
+  }
+  // Serial.printf("hdr: %dus\r\n", micros() - t);
+  led_driver.showPixels();
 
-  // // auto t = micros();
-  // for (size_t i = 0; i < NUM_PIXELS; i++)
-  // {
-  //   hc = CRGBA(pixel_data[i]);
-  // }
-  // // Serial.printf("hdr: %dus\r\n", micros() - t);
-
-  // // _dummy = hdr_pixel_data[11].a;
-
-  // if (fc++ % 256 == 0)
-  // {
-  //   auto now = millis();
-  //   auto fps = 256000.0 / (now - last_time);
-  //   // Serial.printf("FPS: %0.1f\r\n", fps);
-  //   // auto hc = hdr_pixel_data[random(NUM_PIXELS)];
-  //   // Serial.printf("CHDR: %d %d %d %d\r\n", hc.a, hc.r, hc.g, hc.b);
-  //   last_time = now;
-  // }
+  if (fc++ % 256 == 0)
+  {
+    auto now = millis();
+    auto fps = 256000.0 / (now - last_time);
+    Serial.printf("FPS: %0.1f\r\n", fps);
+    // auto hc = hdr_pixel_data[random(NUM_PIXELS)];
+    // Serial.printf("CHDR: %d %d %d %d\r\n", hc.a, hc.r, hc.g, hc.b);
+    last_time = now;
+  }
 }
