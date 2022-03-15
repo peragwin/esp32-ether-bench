@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <FastLED.h>
 #include <ETH.h>
 #include <esp_eth.h>
 #include "lwip/err.h"
@@ -8,21 +7,27 @@
 #include <lwip/netdb.h>
 
 #define NUMSTRIPS 8
-#define NUM_LEDS_PER_STRIP 512
+#define NUM_LEDS_PER_STRIP 510
 #define SNAKEPATTERN 0
 #define ALTERNATEPATTERN 0
 #include <I2SClockBasedLedDriver.h>
 
-// struct CRGB
-// {
-//   uint8_t r;
-//   uint8_t g;
-//   uint8_t b;
-// };
+#include <ArtnetWiFi.h>
+#define PIXELS_PER_UNIVERSE 170
+
+struct CRGB
+{
+  uint8_t r;
+  uint8_t g;
+  uint8_t b;
+};
 
 int LED_PINS[] = {32, 33, 14, 12, 13, 15, 2, 4};
 const int CLOCK_PIN = 16;
 I2SClockBasedLedDriver led_driver;
+
+ArtnetWiFiReceiver artnet;
+void handle_frame();
 
 struct CRGBA
 {
@@ -51,6 +56,37 @@ static bool eth_connected = false;
 
 TaskHandle_t udp_task;
 TaskHandle_t tcp_server_task_h;
+TaskHandle_t artnet_task_hdl;
+
+SemaphoreHandle_t artnet_frame_ready_sem = NULL;
+
+static void artnet_task(void *pv_params)
+{
+  // artnet.begin(NUM_PIXELS, 170);
+  artnet.subscribe([](const uint32_t universe, const uint8_t *data, const uint16_t size)
+                   {
+    // if (universe == 0xffff) {
+    //   // trigger frame_sync
+    //   xTaskNotify()..
+    //   handle_frame();
+    //   return;
+    // }
+    auto offset = universe * PIXELS_PER_UNIVERSE * sizeof(CRGB);
+    if (offset + size >= sizeof(pixel_data)) {
+      return;
+    }
+    memcpy(((uint8_t*)pixel_data)+offset, data, size); });
+
+  artnet.begin();
+
+  while (1)
+  {
+    artnet.parse();
+    // Serial.println("parsed");
+    // yield();
+    // taskYIELD();
+  }
+}
 
 static void udp_server_task(void *pvParameters)
 {
@@ -365,9 +401,11 @@ void WiFiEvent(WiFiEvent_t event)
     eth_connected = true;
 
     // xTaskCreatePinnedToCore(udp_server_task, "udp_task", 20000, nullptr, 4, &udp_task, 1);
-    xTaskCreatePinnedToCore(tcp_server_task, "tcp_task", 20000, nullptr, 4, &tcp_server_task_h, 0);
+    // xTaskCreatePinnedToCore(tcp_server_task, "tcp_task", 20000, nullptr, 4, &tcp_server_task_h, 0);
 
-    Serial.println("UDP listening on port 1337");
+    xTaskCreatePinnedToCore(artnet_task, "artnet_rx", 16 << 10, nullptr, 4, &artnet_task_hdl, 0);
+
+    // Serial.println("UDP listening on port 1337");
     break;
   case SYSTEM_EVENT_ETH_DISCONNECTED:
   case ARDUINO_EVENT_ETH_DISCONNECTED:
@@ -393,26 +431,47 @@ void setup()
   WiFi.mode(WIFI_MODE_NULL);
   WiFi.onEvent(WiFiEvent);
   ETH.begin(1, 17);
+
+  // artnet + udp stack is not yielding properly :(
+  disableCore0WDT();
 }
 
 void loop()
+{
+  auto now = millis();
+  handle_frame();
+  auto e = millis() - now;
+  delay(max(1000 / 70 - (int)e, 0));
+}
+
+void handle_frame()
 {
   // yield();
 
   static int fc = 0;
   static unsigned long last_time = millis();
 
-  fill_rainbow(pixel_data, NUM_PIXELS, fc, 1);
-  auto s = sin8(fc / 16);
-  for (size_t i = 0; i < NUM_PIXELS; i++)
-  {
-    pixel_data[i] %= s;
-  }
+  // if (xSemaphoreTake(artnet_frame_ready_sem, 0) != pdTRUE)
+  // {
+  //   return;
+  // }
+
+  // fill_rainbow(pixel_data, NUM_PIXELS, fc, 1);
+  // auto s = sin8(fc / 16);
+  // for (size_t i = 0; i < NUM_PIXELS; i++)
+  // {
+  //   pixel_data[i] %= s;
+  // }
 
   // auto t = micros();
   for (size_t i = 0; i < NUM_PIXELS; i++)
   {
     hdr_pixel_data[i] = CRGBA(pixel_data[i]);
+    // auto c = CRGBA(pixel_data[i]);
+    // for (size_t j = 0; j < NUMSTRIPS; j++)
+    // {
+    //   hdr_pixel_data[NUM_LEDS_PER_STRIP * j + i] = c;
+    // }
   }
   // Serial.printf("hdr: %dus\r\n", micros() - t);
   led_driver.showPixels();
